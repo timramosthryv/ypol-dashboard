@@ -471,7 +471,7 @@ function parseRows(resp) {
     delete row.logoRaw; delete row.photosRaw;
     row.country = detectCountry(row);
     ['mobile', 'altPhone', 'fax'].forEach(k => { row[k] = formatPhone(cleanPhone(row[k]), row.country); });
-    row.filled = CONTENT_FIELDS.filter(([k]) => row[k]).length;
+    row.filled = CONTENT_FIELDS.filter(([k]) => provided(row[k])).length;
     return row;
   }).filter(r => r.date && !isNaN(r.date.getTime()));
 }
@@ -543,6 +543,12 @@ const COUNTRY_LABEL = { AU: 'Australia', NZ: 'New Zealand', Unknown: 'Unknown' }
 function countryPill(c) {
   const cls = c === 'AU' ? 'pill-au' : c === 'NZ' ? 'pill-nz' : 'pill-unk';
   return '<span class="pill ' + cls + '">' + esc(c) + '</span>';
+}
+
+// Placeholder answers like "N/A" or "None" are kept for display but not counted as content
+function provided(v) {
+  const t = String(v == null ? '' : v).trim();
+  return !!t && !/^(n\/?a|none|nil|null|no|not applicable|-+|\.+)$/i.test(t);
 }
 
 // Catch the common "Thrive" misspelling of the company name in free text
@@ -852,7 +858,7 @@ function renderCsmChart(data) {
 
 function renderContentChart(data) {
   const total = data.length || 1;
-  const rows = CONTENT_FIELDS.map(([k, label]) => [label, Math.round(data.filter(r => r[k]).length / total * 100)])
+  const rows = CONTENT_FIELDS.map(([k, label]) => [label, Math.round(data.filter(r => provided(r[k])).length / total * 100)])
     .sort((a, b) => b[1] - a[1]);
   horizontalBar('chart-content', 'content-chart-wrap', rows.map(r => r[0]), rows.map(r => r[1]), COLORS.green, v => v + '%');
   CHARTS['chart-content'].options.scales.x.max = 100;
@@ -916,9 +922,9 @@ function renderLog(data) {
     const key = rowKey(r);
     const open = OPEN_ROWS.has(key);
     const social = [['facebook','Facebook'],['instagram','Instagram'],['twitter','X']]
-      .filter(([k]) => r[k]).map(([k, l]) => '<a class="ext" href="' + safeUrl(r[k]) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + l + '</a>').join('');
+      .filter(([k]) => provided(r[k])).map(([k, l]) => '<a class="ext" href="' + safeUrl(r[k]) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + l + '</a>').join('');
     const extras = [['holidayHours','Holiday Hours'],['reservations','Reservations'],['menu','Menu'],['order','Order'],['fax','Fax']]
-      .filter(([k]) => r[k]).map(([, l]) => '<span class="pill pill-on">' + l + '</span>').join('');
+      .filter(([k]) => provided(r[k])).map(([, l]) => '<span class="pill pill-on">' + l + '</span>').join('');
     html += '<tr class="log-row' + (open ? ' open' : '') + '" onclick="toggleRow(\'' + jsq(key) + '\')">' +
       '<td>' + fmtDate(r.date) + '<span class="sub" style="padding-left:14px">' + fmtTime(r.date) + '</span></td>' +
       '<td style="font-weight:600">' + esc(r.business) + '</td>' +
@@ -950,7 +956,7 @@ function yesNo(b) { return b ? '<span class="pill pill-yes">Yes</span>' : '<span
 // Every field from the form, grouped. Uploads show as Yes/No and counts only.
 function detailHtml(r) {
   const item = (k, v) => '<div class="detail-item"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
-  const txt = v => v ? esc(v) : dash();
+  const txt = v => v ? esc(v) + (provided(v) ? '' : ' <span class="sub" style="display:inline">(not counted)</span>') : dash();
   const link = v => {
     if (!v) return dash();
     const t = String(v).trim();
