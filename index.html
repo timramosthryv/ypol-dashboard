@@ -134,6 +134,10 @@ tr:hover td { background:var(--gray-50); }
 .pill { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; margin-right:4px; }
 .pill-on { background:var(--green-light); color:var(--green); }
 .pill-coach { background:var(--blue-light); color:var(--blue); }
+.pill-au { background:var(--orange-light); color:var(--orange); }
+.pill-nz { background:var(--teal-light); color:var(--teal); }
+.pill-unk { background:var(--gray-100); color:var(--gray-500); }
+.country-flag { font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px; margin-left:8px; vertical-align:middle; }
 .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
 a.ext { color:var(--blue); text-decoration:none; font-weight:600; font-size:12px; margin-right:6px; }
 a.ext:hover { text-decoration:underline; }
@@ -191,6 +195,14 @@ a.ext:hover { text-decoration:underline; }
   <div class="sidebar-section">
     <div class="sidebar-section-title">Filters</div>
     <div class="filter-group">
+      <label>Country</label>
+      <select id="filter-country">
+        <option value="all">AU and NZ</option>
+        <option value="AU">Australia</option>
+        <option value="NZ">New Zealand</option>
+      </select>
+    </div>
+    <div class="filter-group">
       <label>Coach</label>
       <select id="filter-coach"><option value="all">All Coaches</option></select>
     </div>
@@ -218,7 +230,7 @@ a.ext:hover { text-decoration:underline; }
   </div>
   <div style="flex:1;"></div>
   <div style="padding:16px 20px; border-top:1px solid var(--gray-100); font-size:11px; color:var(--gray-400); font-weight:500;">
-    YPOL Content Dashboard v1.0<br>Source: YPOL Content Submission Form<br>Data refreshes on page load
+    YPOL Content Dashboard v1.1<br>Source: YPOL Content Submission Form<br>AU &middot; NZ<br>Data refreshes on page load
   </div>
 </nav>
 
@@ -279,6 +291,9 @@ a.ext:hover { text-decoration:underline; }
       </div>
     </div>
 
+    <div class="chart-card-title" style="padding:0 2px">By Country <span class="chart-card-note">Click a card to filter the dashboard to that country</span></div>
+    <div class="coach-cards" id="country-cards"></div>
+
     <div class="chart-card-title" style="padding:0 2px">By Coach <span class="chart-card-note">Click a card to filter the dashboard to that coach</span></div>
     <div class="coach-cards" id="coach-cards"></div>
 
@@ -335,7 +350,7 @@ const FIELD_MAP = {
   baEmail: 'BA Email',
   business: 'Business Name',
   thryvId: 'Thryv ID',
-  abn: 'ABN',
+  abn: ['ABN / NZBN', 'ABN', 'NZBN'],
   mobile: 'Mobile Phone',
   altPhone: 'Alternate Phone',
   fax: 'Fax',
@@ -350,7 +365,7 @@ const FIELD_MAP = {
 
 // Optional text content used for the completeness score and Content Provided chart
 const CONTENT_FIELDS = [
-  ['abn', 'ABN'], ['mobile', 'Mobile Phone'], ['altPhone', 'Alternate Phone'], ['fax', 'Fax'],
+  ['abn', 'ABN / NZBN'], ['mobile', 'Mobile Phone'], ['altPhone', 'Alternate Phone'], ['fax', 'Fax'],
   ['holidayHours', 'Holiday Hours'], ['reservations', 'Reservations'], ['menu', 'Menu'],
   ['order', 'Order'], ['facebook', 'Facebook'], ['instagram', 'Instagram'], ['twitter', 'Twitter / X']
 ];
@@ -403,7 +418,12 @@ function parseDate(cell) {
 function parseRows(resp) {
   const cols = (resp.table.cols || []).map(c => String(c.label || '').trim().toLowerCase());
   const idx = {};
-  Object.entries(FIELD_MAP).forEach(([key, label]) => { idx[key] = cols.indexOf(label.toLowerCase()); });
+  // A field can list several accepted header labels; the first one found wins
+  Object.entries(FIELD_MAP).forEach(([key, label]) => {
+    const labels = Array.isArray(label) ? label : [label];
+    idx[key] = labels.map(l => cols.indexOf(l.toLowerCase())).find(i => i >= 0);
+    if (idx[key] == null) idx[key] = -1;
+  });
   if (idx.date < 0) throw new Error('Could not find the "Submission Date" column in the sheet.');
 
   return (resp.table.rows || []).map(r => {
@@ -418,7 +438,8 @@ function parseRows(resp) {
     const row = { date: parseDate(c[idx.date]) };
     Object.keys(FIELD_MAP).forEach(k => { if (k !== 'date') row[k] = txt(k); });
     row.business = fixCompanyName(row.business);
-    ['mobile', 'altPhone', 'fax'].forEach(k => { row[k] = cleanPhone(row[k]); });
+    row.country = detectCountry(row);
+    ['mobile', 'altPhone', 'fax'].forEach(k => { row[k] = formatPhone(cleanPhone(row[k]), row.country); });
     row.filled = CONTENT_FIELDS.filter(([k]) => row[k]).length;
     return row;
   }).filter(r => r.date && !isNaN(r.date.getTime()));
@@ -430,6 +451,67 @@ function cleanPhone(s) {
   if (!s) return '';
   const out = s.replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ').trim();
   return /\d/.test(out) ? out : '';
+}
+
+// ── Country detection (AU / NZ) ──
+// The form has no country field, so country is inferred:
+//   1. Business number: 11 digits = Australian ABN, 13 digits starting 94 = NZBN
+//   2. Phone: +61 / +64 country code, NZ freephone 0800 / 0508,
+//      AU 1800 / 1300 / 13, AU mobile 04XX XXX XXX
+// Anything that can't be placed shows as "Unknown" rather than being guessed.
+function digitsOf(s) { return String(s || '').replace(/\D/g, ''); }
+
+function countryFromPhone(p) {
+  const raw = String(p || '');
+  const d = digitsOf(raw);
+  if (!d) return null;
+  if (/^\(?\+?61\+?\)?/.test(raw.trim()) || (d.startsWith('61') && d.length >= 11)) return 'AU';
+  if (/^\(?\+?64\+?\)?/.test(raw.trim()) || (d.startsWith('64') && d.length >= 10)) return 'NZ';
+  if (/^0(800|508)/.test(d)) return 'NZ';
+  if (/^(1800|1300)/.test(d) || /^13\d{4}$/.test(d)) return 'AU';
+  if (/^04\d{8}$/.test(d)) return 'AU';
+  return null;
+}
+
+function detectCountry(r) {
+  const bn = digitsOf(r.abn);
+  if (bn.length === 13 && bn.startsWith('94')) return 'NZ';
+  if (bn.length === 11) return 'AU';
+  return countryFromPhone(r.mobile) || countryFromPhone(r.altPhone) || countryFromPhone(r.fax) || 'Unknown';
+}
+
+// Standard formats:
+//   AU  +61 4XX XXX XXX (mobile), +61 X XXXX XXXX (landline), 1800 XXX XXX, 13 XX XX
+//   NZ  +64 2X XXX XXXX (mobile), +64 X XXX XXXX (landline), 0800 XXX XXX
+// Numbers that don't fit a known pattern are left as entered.
+function formatPhone(p, country) {
+  if (!p) return '';
+  let d = digitsOf(p);
+  const groups = (str, sizes) => { const out = []; let i = 0; sizes.forEach(n => { out.push(str.slice(i, i + n)); i += n; }); if (i < str.length) out.push(str.slice(i)); return out.filter(Boolean).join(' '); };
+
+  if (country === 'AU') {
+    if (/^(1800|1300)\d{6}$/.test(d)) return groups(d, [4, 3, 3]);
+    if (/^13\d{4}$/.test(d)) return groups(d, [2, 2, 2]);
+    if (d.startsWith('61')) d = d.slice(2);
+    d = d.replace(/^0/, '');
+    if (d.length !== 9) return p;
+    return '+61 ' + (d[0] === '4' ? groups(d, [3, 3, 3]) : groups(d, [1, 4, 4]));
+  }
+  if (country === 'NZ') {
+    if (/^0(800|508)\d{6,7}$/.test(d)) return groups(d, [4, 3, 4]);
+    if (d.startsWith('64')) d = d.slice(2);
+    d = d.replace(/^0/, '');
+    if (d[0] === '2' && d.length >= 8 && d.length <= 10) return '+64 ' + groups(d, [2, 3, 4]);
+    if (/^[3-79]\d{7}$/.test(d)) return '+64 ' + groups(d, [1, 3, 4]);
+    return p;
+  }
+  return p;
+}
+
+const COUNTRY_LABEL = { AU: 'Australia', NZ: 'New Zealand', Unknown: 'Unknown' };
+function countryPill(c) {
+  const cls = c === 'AU' ? 'pill-au' : c === 'NZ' ? 'pill-nz' : 'pill-unk';
+  return '<span class="pill ' + cls + '">' + esc(c) + '</span>';
 }
 
 // Catch the common "Thrive" misspelling of the company name in free text
@@ -482,12 +564,14 @@ function populateFilters() {
 }
 
 function getFiltered() {
+  const country = val('filter-country');
   const coach = val('filter-coach'), csm = val('filter-csm'), ba = val('filter-ba'), month = val('filter-month');
   const from = document.getElementById('filter-from').value;
   const to = document.getElementById('filter-to').value;
   const fromD = from ? new Date(from + 'T00:00:00') : null;
   const toD = to ? new Date(to + 'T23:59:59') : null;
   return ALL_DATA.filter(r => {
+    if (country !== 'all' && r.country !== country) return false;
     if (coach !== 'all' && r.coachName !== coach) return false;
     if (csm !== 'all' && r.csmName !== csm) return false;
     if (ba !== 'all' && r.baName !== ba) return false;
@@ -500,7 +584,7 @@ function getFiltered() {
 function val(id) { return document.getElementById(id).value; }
 
 function resetFilters() {
-  ['filter-coach','filter-csm','filter-ba','filter-month'].forEach(id => document.getElementById(id).value = 'all');
+  ['filter-country','filter-coach','filter-csm','filter-ba','filter-month'].forEach(id => document.getElementById(id).value = 'all');
   document.getElementById('filter-from').value = '';
   document.getElementById('filter-to').value = '';
   document.getElementById('log-search').value = '';
@@ -521,6 +605,7 @@ function render() {
   updateBadge();
   renderKPIs(FILTERED);
   renderTrend(FILTERED);
+  renderCountryCards(FILTERED);
   renderCoachCards(FILTERED);
   renderCsmChart(FILTERED);
   renderContentChart(FILTERED);
@@ -530,6 +615,7 @@ function render() {
 
 function updateBadge() {
   const parts = [];
+  if (val('filter-country') !== 'all') parts.push(COUNTRY_LABEL[val('filter-country')]);
   if (val('filter-coach') !== 'all') parts.push(val('filter-coach'));
   if (val('filter-month') !== 'all') parts.push(document.getElementById('filter-month').selectedOptions[0].textContent);
   const from = val('filter-from'), to = val('filter-to');
@@ -568,7 +654,8 @@ function renderKPIs(data) {
   const accounts = new Set(data.map(r => (r.thryvId || r.business).toLowerCase()).filter(Boolean));
   document.getElementById('kpi-accounts').textContent = accounts.size;
   const dupes = total - accounts.size;
-  document.getElementById('kpi-accounts-sub').textContent = dupes > 0 ? dupes + ' repeat submission' + (dupes === 1 ? '' : 's') : 'by Thryv ID';
+  const au = data.filter(r => r.country === 'AU').length, nz = data.filter(r => r.country === 'NZ').length;
+  document.getElementById('kpi-accounts-sub').textContent = au + ' AU · ' + nz + ' NZ submissions' + (dupes > 0 ? ' · ' + dupes + ' repeat' : '');
 
   const csms = new Set(data.map(r => r.csmName).filter(Boolean));
   const coaches = new Set(data.map(r => r.coachName).filter(Boolean));
@@ -652,6 +739,40 @@ function renderCoachCards(data) {
   });
   if (!sorted.length) html = '<div class="card"><div class="card-body" style="color:var(--gray-400)">No submissions for this selection</div></div>';
   document.getElementById('coach-cards').innerHTML = html;
+}
+
+function renderCountryCards(data) {
+  const sel = val('filter-country');
+  const order = ['AU', 'NZ', 'Unknown'];
+  let html = '';
+  order.forEach(c => {
+    const rows = data.filter(r => r.country === c);
+    if (c === 'Unknown' && !rows.length) return;
+    const share = data.length ? Math.round(rows.length / data.length * 100) : 0;
+    const csms = new Set(rows.map(r => r.csmName).filter(Boolean)).size;
+    const accts = new Set(rows.map(r => (r.thryvId || r.business).toLowerCase())).size;
+    const last = rows.length ? rows.reduce((m, r) => r.date > m ? r.date : m, rows[0].date) : null;
+    const clickable = c !== 'Unknown';
+    html += '<div class="card coach-card" style="' + (clickable ? 'cursor:pointer;' : '') + (sel === c ? 'border-color:var(--orange);' : '') + '"' +
+      (clickable ? ' onclick="toggleCountry(\'' + c + '\')"' : '') + '><div class="card-body">' +
+      '<div class="name">' + COUNTRY_LABEL[c] + ' ' + countryPill(c) + '</div>' +
+      '<div class="email">' + share + '% of submissions in view</div>' +
+      '<div class="stats">' +
+        '<div><div class="stat-v">' + rows.length + '</div><div class="stat-l">Submissions</div></div>' +
+        '<div><div class="stat-v">' + csms + '</div><div class="stat-l">CSMs</div></div>' +
+        '<div><div class="stat-v">' + accts + '</div><div class="stat-l">Accounts</div></div>' +
+      '</div>' +
+      '<div class="last">' + (last ? 'Last submission: ' + fmtDate(last) : 'No submissions in this view') +
+      (c === 'Unknown' ? '<br>No ABN, NZBN or phone number to place these' : '') + '</div>' +
+    '</div></div>';
+  });
+  document.getElementById('country-cards').innerHTML = html;
+}
+
+function toggleCountry(c) {
+  const sel = document.getElementById('filter-country');
+  sel.value = sel.value === c ? 'all' : c;
+  render();
 }
 
 function toggleCoach(name) {
@@ -738,9 +859,9 @@ function renderBreakdown(data) {
 
 function renderLog(data) {
   const q = document.getElementById('log-search').value.trim().toLowerCase();
-  const rows = q ? data.filter(r => [r.business, r.thryvId, r.csmName, r.coachName, r.baName, r.abn].join(' ').toLowerCase().includes(q)) : data;
+  const rows = q ? data.filter(r => [r.business, r.thryvId, r.csmName, r.coachName, r.baName, r.abn, r.country].join(' ').toLowerCase().includes(q)) : data;
   document.getElementById('log-count').textContent = rows.length + ' of ' + data.length + ' shown';
-  let html = '<table><thead><tr><th>Submitted</th><th>Business</th><th>Thryv ID</th><th>ABN</th><th>CSM</th><th>Coach</th><th>Business Advisor</th><th>Phone</th><th>Social</th><th>Content Included</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Submitted</th><th>Business</th><th>Country</th><th>Thryv ID</th><th>ABN / NZBN</th><th>CSM</th><th>Coach</th><th>Business Advisor</th><th>Phone</th><th>Social</th><th>Content Included</th></tr></thead><tbody>';
   rows.forEach(r => {
     const social = [['facebook','Facebook'],['instagram','Instagram'],['twitter','X']]
       .filter(([k]) => r[k]).map(([k, l]) => '<a class="ext" href="' + safeUrl(r[k]) + '" target="_blank" rel="noopener">' + l + '</a>').join('');
@@ -749,6 +870,7 @@ function renderLog(data) {
     html += '<tr>' +
       '<td>' + fmtDate(r.date) + '<span class="sub">' + r.date.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' }) + '</span></td>' +
       '<td style="font-weight:600">' + esc(r.business) + '</td>' +
+      '<td>' + countryPill(r.country) + '</td>' +
       '<td class="mono">' + (esc(r.thryvId) || dash()) + '</td>' +
       '<td class="mono">' + (esc(r.abn) || dash()) + '</td>' +
       '<td>' + esc(r.csmName) + '<span class="sub">' + esc(r.csmEmail) + '</span></td>' +
@@ -758,16 +880,16 @@ function renderLog(data) {
       '<td>' + (social || dash()) + '</td>' +
       '<td>' + (extras || dash()) + '</td></tr>';
   });
-  if (!rows.length) html += '<tr><td colspan="10" style="text-align:center; color:var(--gray-400); padding:24px">No submissions match this selection</td></tr>';
+  if (!rows.length) html += '<tr><td colspan="11" style="text-align:center; color:var(--gray-400); padding:24px">No submissions match this selection</td></tr>';
   html += '</tbody></table>';
   document.getElementById('log-wrap').innerHTML = html;
 }
 
 function exportCsv() {
   const q = document.getElementById('log-search').value.trim().toLowerCase();
-  const rows = q ? FILTERED.filter(r => [r.business, r.thryvId, r.csmName, r.coachName, r.baName, r.abn].join(' ').toLowerCase().includes(q)) : FILTERED;
-  const headers = ['Submission Date','Business Name','Thryv ID','ABN','CSM Name','CSM Email','Coach Name','Coach Email','BA Name','BA Email','Mobile Phone','Alternate Phone','Fax','Holiday Hours','Reservations','Menu','Order','Facebook URL','Instagram URL','Twitter / X URL'];
-  const keys = ['business','thryvId','abn','csmName','csmEmail','coachName','coachEmail','baName','baEmail','mobile','altPhone','fax','holidayHours','reservations','menu','order','facebook','instagram','twitter'];
+  const rows = q ? FILTERED.filter(r => [r.business, r.thryvId, r.csmName, r.coachName, r.baName, r.abn, r.country].join(' ').toLowerCase().includes(q)) : FILTERED;
+  const headers = ['Submission Date','Business Name','Country','Thryv ID','ABN / NZBN','CSM Name','CSM Email','Coach Name','Coach Email','BA Name','BA Email','Mobile Phone','Alternate Phone','Fax','Holiday Hours','Reservations','Menu','Order','Facebook URL','Instagram URL','Twitter / X URL'];
+  const keys = ['business','country','thryvId','abn','csmName','csmEmail','coachName','coachEmail','baName','baEmail','mobile','altPhone','fax','holidayHours','reservations','menu','order','facebook','instagram','twitter'];
   const cell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
   const lines = [headers.map(cell).join(',')].concat(rows.map(r =>
     [r.date.toISOString().replace('T', ' ').slice(0, 19)].concat(keys.map(k => r[k])).map(cell).join(',')));
