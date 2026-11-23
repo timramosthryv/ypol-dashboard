@@ -137,6 +137,19 @@ tr:hover td { background:var(--gray-50); }
 .pill-au { background:var(--orange-light); color:var(--orange); }
 .pill-nz { background:var(--teal-light); color:var(--teal); }
 .pill-unk { background:var(--gray-100); color:var(--gray-500); }
+.pill-yes { background:var(--green-light); color:var(--green); }
+.pill-no { background:#fef2f2; color:var(--red); }
+tr.log-row { cursor:pointer; }
+tr.log-row td:first-child::before { content:'\25B8'; display:inline-block; width:14px; color:var(--gray-400); transition:transform 0.15s; }
+tr.log-row.open td:first-child::before { transform:rotate(90deg); color:var(--orange); }
+tr.log-row.open td { background:var(--orange-light); }
+tr.detail-row > td { background:var(--gray-50); padding:0; white-space:normal; }
+tr.detail-row:hover > td { background:var(--gray-50); }
+.detail-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:16px; padding:18px 20px 20px 34px; }
+.detail-section h4 { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--gray-400); margin-bottom:8px; }
+.detail-item { margin-bottom:8px; }
+.detail-item .k { font-size:11px; font-weight:600; color:var(--gray-500); }
+.detail-item .v { font-size:13px; color:var(--gray-800); white-space:pre-wrap; word-break:break-word; }
 .country-flag { font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px; margin-left:8px; vertical-align:middle; }
 .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
 a.ext { color:var(--blue); text-decoration:none; font-weight:600; font-size:12px; margin-right:6px; }
@@ -215,6 +228,14 @@ a.ext:hover { text-decoration:underline; }
       <select id="filter-ba"><option value="all">All Business Advisors</option></select>
     </div>
     <div class="filter-group">
+      <label>Logo Uploaded</label>
+      <select id="filter-logo">
+        <option value="all">All</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+    </div>
+    <div class="filter-group">
       <label>Month</label>
       <select id="filter-month"><option value="all">All Months</option></select>
     </div>
@@ -230,7 +251,7 @@ a.ext:hover { text-decoration:underline; }
   </div>
   <div style="flex:1;"></div>
   <div style="padding:16px 20px; border-top:1px solid var(--gray-100); font-size:11px; color:var(--gray-400); font-weight:500;">
-    YPOL Content Dashboard v1.1<br>Source: YPOL Content Submission Form<br>AU &middot; NZ<br>Data refreshes on page load
+    YPOL Content Dashboard v1.2<br>Source: YPOL Content Submission Form<br>AU &middot; NZ<br>Data refreshes on page load
   </div>
 </nav>
 
@@ -273,7 +294,7 @@ a.ext:hover { text-decoration:underline; }
         <div class="kpi-icon" style="background:var(--teal-light); color:var(--teal);">&#9989;</div>
         <div class="card-title">Avg Content Completeness</div>
         <div class="kpi-value" id="kpi-complete">-</div>
-        <div class="kpi-sub">share of optional text fields filled</div>
+        <div class="kpi-sub" id="kpi-complete-sub">share of optional content provided</div>
       </div></div>
     </div>
 
@@ -360,11 +381,16 @@ const FIELD_MAP = {
   order: 'Order',
   twitter: 'Twitter / X URL',
   facebook: 'Facebook URL',
-  instagram: 'Instagram URL'
+  instagram: 'Instagram URL',
+  // Uploads: only whether a file was provided (and how many) is used, never the file itself
+  logoRaw: 'Business Logo',
+  photosRaw: 'Photo Gallery',
+  submissionId: 'Submission ID'
 };
 
 // Optional text content used for the completeness score and Content Provided chart
 const CONTENT_FIELDS = [
+  ['logoFlag', 'Business Logo'], ['photosFlag', 'Photo Gallery'],
   ['abn', 'ABN / NZBN'], ['mobile', 'Mobile Phone'], ['altPhone', 'Alternate Phone'], ['fax', 'Fax'],
   ['holidayHours', 'Holiday Hours'], ['reservations', 'Reservations'], ['menu', 'Menu'],
   ['order', 'Order'], ['facebook', 'Facebook'], ['instagram', 'Instagram'], ['twitter', 'Twitter / X']
@@ -438,6 +464,11 @@ function parseRows(resp) {
     const row = { date: parseDate(c[idx.date]) };
     Object.keys(FIELD_MAP).forEach(k => { if (k !== 'date') row[k] = txt(k); });
     row.business = fixCompanyName(row.business);
+    row.hasLogo = !!row.logoRaw;
+    row.photoCount = (row.photosRaw.match(/https?:\/\//g) || []).length || (row.photosRaw ? 1 : 0);
+    row.logoFlag = row.hasLogo ? 'Yes' : '';
+    row.photosFlag = row.photoCount ? String(row.photoCount) : '';
+    delete row.logoRaw; delete row.photosRaw;
     row.country = detectCountry(row);
     ['mobile', 'altPhone', 'fax'].forEach(k => { row[k] = formatPhone(cleanPhone(row[k]), row.country); });
     row.filled = CONTENT_FIELDS.filter(([k]) => row[k]).length;
@@ -565,6 +596,7 @@ function populateFilters() {
 
 function getFiltered() {
   const country = val('filter-country');
+  const logo = val('filter-logo');
   const coach = val('filter-coach'), csm = val('filter-csm'), ba = val('filter-ba'), month = val('filter-month');
   const from = document.getElementById('filter-from').value;
   const to = document.getElementById('filter-to').value;
@@ -572,6 +604,8 @@ function getFiltered() {
   const toD = to ? new Date(to + 'T23:59:59') : null;
   return ALL_DATA.filter(r => {
     if (country !== 'all' && r.country !== country) return false;
+    if (logo === 'yes' && !r.hasLogo) return false;
+    if (logo === 'no' && r.hasLogo) return false;
     if (coach !== 'all' && r.coachName !== coach) return false;
     if (csm !== 'all' && r.csmName !== csm) return false;
     if (ba !== 'all' && r.baName !== ba) return false;
@@ -584,7 +618,7 @@ function getFiltered() {
 function val(id) { return document.getElementById(id).value; }
 
 function resetFilters() {
-  ['filter-country','filter-coach','filter-csm','filter-ba','filter-month'].forEach(id => document.getElementById(id).value = 'all');
+  ['filter-country','filter-logo','filter-coach','filter-csm','filter-ba','filter-month'].forEach(id => document.getElementById(id).value = 'all');
   document.getElementById('filter-from').value = '';
   document.getElementById('filter-to').value = '';
   document.getElementById('log-search').value = '';
@@ -616,6 +650,7 @@ function render() {
 function updateBadge() {
   const parts = [];
   if (val('filter-country') !== 'all') parts.push(COUNTRY_LABEL[val('filter-country')]);
+  if (val('filter-logo') !== 'all') parts.push(val('filter-logo') === 'yes' ? 'Logo uploaded' : 'No logo');
   if (val('filter-coach') !== 'all') parts.push(val('filter-coach'));
   if (val('filter-month') !== 'all') parts.push(document.getElementById('filter-month').selectedOptions[0].textContent);
   const from = val('filter-from'), to = val('filter-to');
@@ -664,6 +699,11 @@ function renderKPIs(data) {
 
   const avg = total ? data.reduce((s, r) => s + r.filled, 0) / (total * CONTENT_FIELDS.length) * 100 : 0;
   document.getElementById('kpi-complete').textContent = total ? avg.toFixed(0) + '%' : '-';
+  const logos = data.filter(r => r.hasLogo).length;
+  const photos = data.reduce((s, r) => s + r.photoCount, 0);
+  document.getElementById('kpi-complete-sub').textContent = total
+    ? logos + ' of ' + total + ' with logo \u00b7 ' + photos + ' photo' + (photos === 1 ? '' : 's')
+    : 'share of optional content provided';
 }
 
 function renderTrend(data) {
@@ -828,7 +868,7 @@ function renderBreakdown(data) {
     coaches[c][s] = coaches[c][s] || [];
     coaches[c][s].push(r);
   });
-  let html = '<table><thead><tr><th>Coach</th><th>CSM</th><th style="text-align:center">Submissions</th><th style="text-align:center">Accounts</th><th style="text-align:center">This Week</th><th style="text-align:center">Avg Completeness</th><th>Last Submission</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Coach</th><th>CSM</th><th style="text-align:center">Submissions</th><th style="text-align:center">Accounts</th><th style="text-align:center">This Week</th><th style="text-align:center">Logo Uploaded</th><th style="text-align:center">Photos</th><th style="text-align:center">Avg Completeness</th><th>Last Submission</th></tr></thead><tbody>';
   const wk = startOfWeek(new Date());
   const sortedCoaches = Object.entries(coaches).sort((a, b) => count(b[1]) - count(a[1]));
   sortedCoaches.forEach(([coach, csms]) => {
@@ -837,7 +877,7 @@ function renderBreakdown(data) {
     html += rowHtml('<span class="pill pill-coach">' + esc(coach) + '</span>', '<b>All CSMs</b>', all, wk, true);
     csmRows.forEach(([csm, rows]) => { html += rowHtml('', esc(csm), rows, wk, false); });
   });
-  if (!sortedCoaches.length) html += '<tr><td colspan="7" style="text-align:center; color:var(--gray-400); padding:24px">No data</td></tr>';
+  if (!sortedCoaches.length) html += '<tr><td colspan="9" style="text-align:center; color:var(--gray-400); padding:24px">No data</td></tr>';
   html += '</tbody></table>';
   document.getElementById('breakdown-wrap').innerHTML = html;
 
@@ -852,23 +892,35 @@ function renderBreakdown(data) {
       '<td style="text-align:center">' + rows.length + '</td>' +
       '<td style="text-align:center">' + accts + '</td>' +
       '<td style="text-align:center">' + (thisWk || '<span class="muted">0</span>') + '</td>' +
+      '<td style="text-align:center">' + rows.filter(r => r.hasLogo).length + ' of ' + rows.length + '</td>' +
+      '<td style="text-align:center">' + rows.reduce((s, r) => s + r.photoCount, 0) + '</td>' +
       '<td style="text-align:center">' + comp.toFixed(0) + '%</td>' +
       '<td>' + fmtDate(last) + '</td></tr>';
   }
 }
 
-function renderLog(data) {
+function searchRows(data) {
   const q = document.getElementById('log-search').value.trim().toLowerCase();
-  const rows = q ? data.filter(r => [r.business, r.thryvId, r.csmName, r.coachName, r.baName, r.abn, r.country].join(' ').toLowerCase().includes(q)) : data;
-  document.getElementById('log-count').textContent = rows.length + ' of ' + data.length + ' shown';
-  let html = '<table><thead><tr><th>Submitted</th><th>Business</th><th>Country</th><th>Thryv ID</th><th>ABN / NZBN</th><th>CSM</th><th>Coach</th><th>Business Advisor</th><th>Phone</th><th>Social</th><th>Content Included</th></tr></thead><tbody>';
+  return q ? data.filter(r => [r.business, r.thryvId, r.csmName, r.coachName, r.baName, r.abn, r.country, r.submissionId]
+    .join(' ').toLowerCase().includes(q)) : data;
+}
+
+const LOG_COLS = 13;
+let OPEN_ROWS = new Set();
+
+function renderLog(data) {
+  const rows = searchRows(data);
+  document.getElementById('log-count').textContent = rows.length + ' of ' + data.length + ' shown · click a row for full details';
+  let html = '<table><thead><tr><th>Submitted</th><th>Business</th><th>Country</th><th>Thryv ID</th><th>ABN / NZBN</th><th>CSM</th><th>Coach</th><th>Business Advisor</th><th>Phone</th><th style="text-align:center">Logo</th><th style="text-align:center">Photos</th><th>Social</th><th>Content Included</th></tr></thead><tbody>';
   rows.forEach(r => {
+    const key = rowKey(r);
+    const open = OPEN_ROWS.has(key);
     const social = [['facebook','Facebook'],['instagram','Instagram'],['twitter','X']]
-      .filter(([k]) => r[k]).map(([k, l]) => '<a class="ext" href="' + safeUrl(r[k]) + '" target="_blank" rel="noopener">' + l + '</a>').join('');
-    const extras = [['holidayHours','Holiday Hours'],['reservations','Reservations'],['menu','Menu'],['order','Order']]
+      .filter(([k]) => r[k]).map(([k, l]) => '<a class="ext" href="' + safeUrl(r[k]) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + l + '</a>').join('');
+    const extras = [['holidayHours','Holiday Hours'],['reservations','Reservations'],['menu','Menu'],['order','Order'],['fax','Fax']]
       .filter(([k]) => r[k]).map(([, l]) => '<span class="pill pill-on">' + l + '</span>').join('');
-    html += '<tr>' +
-      '<td>' + fmtDate(r.date) + '<span class="sub">' + r.date.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' }) + '</span></td>' +
+    html += '<tr class="log-row' + (open ? ' open' : '') + '" onclick="toggleRow(\'' + jsq(key) + '\')">' +
+      '<td>' + fmtDate(r.date) + '<span class="sub" style="padding-left:14px">' + fmtTime(r.date) + '</span></td>' +
       '<td style="font-weight:600">' + esc(r.business) + '</td>' +
       '<td>' + countryPill(r.country) + '</td>' +
       '<td class="mono">' + (esc(r.thryvId) || dash()) + '</td>' +
@@ -877,22 +929,74 @@ function renderLog(data) {
       '<td>' + esc(r.coachName) + '</td>' +
       '<td>' + (esc(r.baName) || dash()) + '<span class="sub">' + esc(r.baEmail) + '</span></td>' +
       '<td>' + (esc(r.mobile) || dash()) + (r.altPhone ? '<span class="sub">Alt: ' + esc(r.altPhone) + '</span>' : '') + '</td>' +
+      '<td style="text-align:center">' + yesNo(r.hasLogo) + '</td>' +
+      '<td style="text-align:center">' + (r.photoCount ? '<b>' + r.photoCount + '</b>' : '<span class="pill pill-no">None</span>') + '</td>' +
       '<td>' + (social || dash()) + '</td>' +
       '<td>' + (extras || dash()) + '</td></tr>';
+    if (open) html += '<tr class="detail-row"><td colspan="' + LOG_COLS + '">' + detailHtml(r) + '</td></tr>';
   });
-  if (!rows.length) html += '<tr><td colspan="11" style="text-align:center; color:var(--gray-400); padding:24px">No submissions match this selection</td></tr>';
+  if (!rows.length) html += '<tr><td colspan="' + LOG_COLS + '" style="text-align:center; color:var(--gray-400); padding:24px">No submissions match this selection</td></tr>';
   html += '</tbody></table>';
   document.getElementById('log-wrap').innerHTML = html;
 }
 
+function rowKey(r) { return r.submissionId || (r.date.getTime() + '|' + r.thryvId); }
+function toggleRow(key) {
+  if (OPEN_ROWS.has(key)) OPEN_ROWS.delete(key); else OPEN_ROWS.add(key);
+  renderLog(FILTERED);
+}
+function yesNo(b) { return b ? '<span class="pill pill-yes">Yes</span>' : '<span class="pill pill-no">No</span>'; }
+
+// Every field from the form, grouped. Uploads show as Yes/No and counts only.
+function detailHtml(r) {
+  const item = (k, v) => '<div class="detail-item"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
+  const txt = v => v ? esc(v) : dash();
+  const link = v => {
+    if (!v) return dash();
+    const t = String(v).trim();
+    if (/^(https?:\/\/|www\.)/i.test(t) && !/\s/.test(t)) {
+      let host = t; try { host = new URL(/^https?:/i.test(t) ? t : 'https://' + t).hostname.replace(/^www\./, ''); } catch (e) {}
+      return '<a class="ext" href="' + safeUrl(t) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + esc(host) + ' ↗</a>';
+    }
+    return esc(t);
+  };
+  const person = (n, e) => n ? esc(n) + (e ? '<span class="sub">' + esc(e) + '</span>' : '') : dash();
+  const sec = (title, body) => '<div class="detail-section"><h4>' + title + '</h4>' + body + '</div>';
+  return '<div class="detail-grid">' +
+    sec('Business',
+      item('Business Name', txt(r.business)) + item('Thryv ID', txt(r.thryvId)) +
+      item('Country', COUNTRY_LABEL[r.country] || r.country) + item('ABN / NZBN', txt(r.abn))) +
+    sec('Contact',
+      item('Mobile Phone', txt(r.mobile)) + item('Alternate Phone', txt(r.altPhone)) + item('Fax', txt(r.fax))) +
+    sec('Content',
+      item('Holiday Hours', txt(r.holidayHours)) + item('Reservations', link(r.reservations)) +
+      item('Menu', link(r.menu)) + item('Order', link(r.order))) +
+    sec('Social Media',
+      item('Facebook', link(r.facebook)) + item('Instagram', link(r.instagram)) + item('Twitter / X', link(r.twitter))) +
+    sec('Uploads',
+      item('Business Logo', r.hasLogo ? 'Uploaded' : 'Not uploaded') +
+      item('Photo Gallery', r.photoCount ? r.photoCount + ' photo' + (r.photoCount === 1 ? '' : 's') + ' uploaded' : 'No photos uploaded') +
+      item('Content Completeness', Math.round(r.filled / CONTENT_FIELDS.length * 100) + '% (' + r.filled + ' of ' + CONTENT_FIELDS.length + ' optional items)')) +
+    sec('People',
+      item('CSM', person(r.csmName, r.csmEmail)) + item('CSM Coach', person(r.coachName, r.coachEmail)) +
+      item('Business Advisor', person(r.baName, r.baEmail))) +
+    sec('Submission',
+      item('Submitted', fmtDate(r.date) + ', ' + fmtTime(r.date)) + item('Submission ID', '<span class="mono">' + txt(r.submissionId) + '</span>')) +
+  '</div>';
+}
+
 function exportCsv() {
-  const q = document.getElementById('log-search').value.trim().toLowerCase();
-  const rows = q ? FILTERED.filter(r => [r.business, r.thryvId, r.csmName, r.coachName, r.baName, r.abn, r.country].join(' ').toLowerCase().includes(q)) : FILTERED;
-  const headers = ['Submission Date','Business Name','Country','Thryv ID','ABN / NZBN','CSM Name','CSM Email','Coach Name','Coach Email','BA Name','BA Email','Mobile Phone','Alternate Phone','Fax','Holiday Hours','Reservations','Menu','Order','Facebook URL','Instagram URL','Twitter / X URL'];
-  const keys = ['business','country','thryvId','abn','csmName','csmEmail','coachName','coachEmail','baName','baEmail','mobile','altPhone','fax','holidayHours','reservations','menu','order','facebook','instagram','twitter'];
+  const rows = searchRows(FILTERED);
+  const headers = ['Submission Date','Business Name','Country','Thryv ID','ABN / NZBN','CSM Name','CSM Email','Coach Name','Coach Email','BA Name','BA Email','Mobile Phone','Alternate Phone','Fax','Holiday Hours','Reservations','Menu','Order','Facebook URL','Instagram URL','Twitter / X URL','Logo Uploaded','Photo Count','Content Completeness','Submission ID'];
+  const keys = ['business','country','thryvId','abn','csmName','csmEmail','coachName','coachEmail','baName','baEmail','mobile','altPhone','fax','holidayHours','reservations','menu','order','facebook','instagram','twitter','logoCsv','photoCount','completeCsv','submissionId'];
   const cell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const lines = [headers.map(cell).join(',')].concat(rows.map(r =>
-    [r.date.toISOString().replace('T', ' ').slice(0, 19)].concat(keys.map(k => r[k])).map(cell).join(',')));
+  // Dates are written in the sheet's own local time, not converted to UTC
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  const lines = [headers.map(cell).join(',')].concat(rows.map(r => {
+    const x = Object.assign({}, r, { logoCsv: r.hasLogo ? 'Yes' : 'No', completeCsv: Math.round(r.filled / CONTENT_FIELDS.length * 100) + '%' });
+    return [stamp(r.date)].concat(keys.map(k => x[k])).map(cell).join(',');
+  }));
   const blob = new Blob([lines.join('\r\n')], { type: 'text/csv' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -905,6 +1009,7 @@ function exportCsv() {
 function esc(s) { if (!s) return ''; const el = document.createElement('span'); el.textContent = s; return el.innerHTML; }
 function jsq(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
 function dash() { return '<span class="muted">–</span>'; }
+function fmtTime(d) { return d.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' }); }
 function fmtDate(d) { return d.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); }
 function safeUrl(u) {
   let s = String(u).trim();
